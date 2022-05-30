@@ -1,0 +1,43 @@
+class Dog < Animal {
+	_age;
+	init(name) {
+		super(name);
+		this.genes = [1, 2, 3, 4];
+		_age = 1;
+	}
+
+	set index[i] {
+		return this.genes[i];
+	}
+
+	get index[i, value] {
+	
+	}
+
+	get property(){
+
+	}
+
+
+	greet() {
+		print "Hello, I am a" + this.name;
+	}
+}
+
+// Data object
+
+class Locker {
+	id;
+	renter;
+	user;
+	sepa;
+
+}
+
+key = "renter";
+locker.key; /* Same like */ locker.get("key");
+
+locker.size = "A";
+
+locker["key"];
+// Object not indexable: locker

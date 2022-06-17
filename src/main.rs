@@ -1,3 +1,4 @@
+#![feature(backtrace)]
 mod scanner;
 mod tokens;
 mod instructions;
@@ -44,4 +45,5 @@ fn main() {
 	let mut parser = Parser::new(tokens);
 	let ast = parser.parse();
 	println!("{:#?}", ast);
+	println!("{:#?}", parser.warnings);
 }

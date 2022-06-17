@@ -1,8 +1,9 @@
 use std::fmt::Display;
 use std::ops::Index;
+use crate::tokens::Token;
 use crate::TokenType;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Statement {
 	Block(Vec<Statement>),
 	Class(Box<Class>),
@@ -19,7 +20,7 @@ pub enum Statement {
 	Loop(Box<Statement>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Class {
 	pub(crate) name: String,
 	pub(crate) superclass: Option<String>,
@@ -29,7 +30,7 @@ pub struct Class {
 	pub(crate) index_getter: Option<Function>,
 	pub(crate) init: Option<Function>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Function {
 	pub(crate) name: String,
 	pub(crate) params: Vec<String>,
@@ -61,117 +62,151 @@ impl Display for FunctionKind {
 		}
 	}
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct If {
 	pub(crate) condition: Expression,
 	pub(crate) then: Statement,
 	pub(crate) else_if: Vec<ElseIf>,
-	pub(crate) else_: Option<Statement>,
+	pub(crate) r#else: Option<Statement>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct ElseIf {
 	pub(crate) condition: Expression,
 	pub(crate) then: Statement,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Let {
 	pub(crate) name: String,
 	pub(crate) value: Option<Expression>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct While {
 	pub(crate) condition: Expression,
 	pub(crate) body: Statement,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct For {
 	pub(crate) init: Option<Statement>,
 	pub(crate) condition: Option<Expression>,
-	pub(crate) update: Option<Statement>,
+	pub(crate) update: Option<Expression>,
 	pub(crate) body: Statement,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Property {
 	name: String,
 	value: Option<Expression>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Expression {
 	AnonymousFunction(AnonymousFunction),
 	Assign(Assign),
 	Array(Vec<Expression>),
 	Binary(Binary),
 	Call(Call),
-	Index(IndexCall),
+	Cast(Cast),
+	IndexGet(IndexGet),
+	IndexSet(IndexSet),
 	Get(Get),
 	Grouping(Box<Expression>),
 	Literal(Literal),
 	Logical(Logical),
 	Set(Set),
-	Super,
+	Super(Super),
 	This,
 	Unary(Unary),
 	Variable(String),
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct AnonymousFunction {
-	params: Vec<String>,
-	body: Vec<Statement>,
+	pub(crate) params: Vec<String>,
+	pub(crate) body: Box<Statement>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Assign {
 	pub(crate) name: String,
 	pub(crate) value: Box<Expression>,
+	pub operator: Token,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Binary {
 	pub(crate) left: Box<Expression>,
 	pub(crate) operator: TokenType,
 	pub(crate) right: Box<Expression>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Call {
 	pub(crate) callee: Box<Expression>,
 	pub(crate) args: Vec<Expression>,
 }
 
-#[derive(Debug)]
-pub struct IndexCall {
+#[derive(Debug, PartialEq)]
+pub struct Cast {
+	pub(crate) value: Box<Expression>,
+	pub(crate) r#type: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct IndexGet {
 	pub(crate) object: Box<Expression>,
 	pub(crate) index: Box<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
+pub struct IndexSet {
+	pub(crate) object: Box<Expression>,
+	pub(crate) index: Box<Expression>,
+	pub(crate) value: Box<Expression>,
+	pub(crate) operator: Token,
+}
+
+#[derive(Debug, PartialEq)]
 pub struct Get {
 	pub(crate) object: Box<Expression>,
 	pub(crate) name: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Logical {
 	pub(crate) left: Box<Expression>,
 	pub(crate) operator: TokenType,
 	pub(crate) right: Box<Expression>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Set {
 	pub(crate) object: Box<Expression>,
 	pub(crate) name: String,
 	pub(crate) value: Box<Expression>,
+	pub operator: Token,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Super {
-	method: Option<String>,
+	pub(crate) method: Option<String>,
+	pub keyword: Token,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Unary {
 	pub(crate) operator: TokenType,
 	pub(crate) right: Box<Expression>,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Literal {
 	Boolean(bool),
 	Number(f64),
 	String(String),
 	Nil,
+	Type(Type),
+	Function(AnonymousFunction),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Type {
+	String,
+	Number,
+	Boolean,
+	Nil,
+	Object,
+	Fn,
+	Array,
+	Class,
+	Type,
 }

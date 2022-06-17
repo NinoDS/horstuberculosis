@@ -1,11 +1,15 @@
+// use std::backtrace::Backtrace;
 use std::fmt::{Display, format};
-use crate::ast::{Assign, Binary, Call, Class, ElseIf, Expression, For, Function, FunctionKind, Get, If, IndexCall, Let, Literal, Logical, Set, Statement, Unary, While};
+use crate::ast::{AnonymousFunction, Assign, Binary, Call, Cast, Class, ElseIf, Expression, For, Function, FunctionKind, Get, If, IndexGet, IndexSet, Let, Literal, Logical, Set, Statement, Super, Type, Unary, While};
 use crate::tokens::Token;
 use crate::TokenType;
 
+
+#[derive(Debug, PartialEq)]
 enum VarKind {
 	Variable,
 	Property,
+	IndexVariable,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -25,9 +29,11 @@ impl Display for VarKind {
 		match self {
 			VarKind::Variable => write!(f, "variable"),
 			VarKind::Property => write!(f, "property"),
+			VarKind::IndexVariable => write!(f, "index variable"),
 		}
 	}
 }
+
 
 #[derive(Clone, Debug)]
 pub struct ParseError {
@@ -37,11 +43,19 @@ pub struct ParseError {
 
 }
 
+#[derive(Debug)]
+pub struct ParseWarning {
+	message: String,
+	token: Token,
+	context: Context,
+}
+
 pub struct Parser {
 	tokens: Vec<Token>,
 	current: usize,
 	errors: Vec<ParseError>,
 	context: Context,
+	pub(crate) warnings: Vec<ParseWarning>,
 }
 
 impl Parser {
@@ -51,6 +65,7 @@ impl Parser {
 			current: 0,
 			errors: Vec::new(),
 			context: Context::Global,
+			warnings: Vec::new(),
 		}
 	}
 
@@ -61,9 +76,6 @@ impl Parser {
 			match self.declaration() {
 				Ok(statement) => statements.push(statement),
 				Err(e) => {
-					self.errors.push(e);
-
-					self.synchronize();
 				}
 			}
 		}
@@ -77,8 +89,7 @@ impl Parser {
 
 	fn declaration(&mut self) -> Result<Statement, ParseError> {
 		if self.match_token(TokenType::Fn) {
-			let function = self.function(FunctionKind::Function)?;
-			Ok(Statement::Function(Box::new(function)))
+			self.function_declaration()
 		} else if self.match_token(TokenType::Class) {
 			self.class_declaration()
 		} else if self.match_token(TokenType::Let) {
@@ -88,14 +99,31 @@ impl Parser {
 		}
 	}
 
+	fn function_declaration(&mut self) -> Result<Statement, ParseError> {
+		let function = self.function(FunctionKind::Function)?;
+		Ok(Statement::Function(Box::new(function)))
+	}
+
 	fn class_declaration(&mut self) -> Result<Statement, ParseError> {
 		self.context = Context::Class;
 
 		let name = self.consume_identifier("Expect class name.")?;
 
+		let first_char = name.chars().next().unwrap();
+
+		if first_char.is_lowercase() {
+			self.warn(format!("Class name '{}' should start with an uppercase letter.", name));
+		}
+
+		if first_char == '_' {
+			self.warn(format!("Class name '{}' should not start with an underscore.", name));
+		}
+
 		let mut superclass = None;
 		if self.match_token(TokenType::Less) {
-			superclass = Some(self.consume_identifier("Expect superclass name.")?);
+			if let Ok(name) = self.consume_identifier("Expect identifier as superclass name.") {
+				superclass = Some(name);
+			}
 		}
 
 		self.consume_token(TokenType::LeftBrace, "Expect '{' before class body.")?;
@@ -116,9 +144,9 @@ impl Parser {
 				} else {
 					let function = self.function(FunctionKind::Getter)?;
 					if function.name == "get" {
-						self.errors.push(self.error(format!("Cannot override getter in class {}", name)));
+						self.push_error(format!("Cannot override getter in class {}", name));
 					} else {
-						self.errors.push(self.error(format!("Cannot override getter for {} in class {}", function.name, name)));
+						self.push_error(format!("Cannot override getter for {} in class {}", function.name, name));
 					}
 				}
 			} else if self.match_token(TokenType::Set) {
@@ -127,22 +155,57 @@ impl Parser {
 				} else {
 					let function = self.function(FunctionKind::Setter)?;
 					if function.name == "set" {
-						self.errors.push(self.error(format!("Cannot override setter in class {}", name)));
+						self.push_error(format!("Cannot override setter in class {}", name));
 					} else {
-						self.errors.push(self.error(format!("Cannot override setter for {} in class {}", function.name, name)));
+						self.push_error(format!("Cannot override setter for {} in class {}", function.name, name));
 					}
 				}
 			} else if self.peek_next().token_type == TokenType::LeftParen {
 				methods.push(self.function(FunctionKind::Method)?);
 			} else {
-				properties.push(self.var_declaration(VarKind::Property)?);
+				if let Ok(property) = self.var_declaration(VarKind::Property) {
+					properties.push(property);
+				}
+			}
+		}
+
+		for method in &methods {
+			if method.name == "setIndex" {
+				self.warn(format!("Use index setter syntax instead of setIndex() in class {}", name));
+				if index_setter.is_some() {
+					self.warn(format!("Index setter is overriding setIndex() in class {}", name));
+				}
+				if method.params.len() != 2 {
+					self.push_error(format!("Index setter in class {} should have two parameters", name));
+				}
+			}
+			if method.name == "getIndex" {
+				self.warn(format!("Use index getter syntax instead of getIndex() in class {}", name));
+				if index_getter.is_some() {
+					self.warn(format!("Index getter is overriding getIndex() in class {}", name));
+				}
+				if method.params.len() != 1 {
+					self.push_error(format!("getIndex() in class {} should have one parameter", name));
+				}
+			}
+		}
+
+		if let Some(index_setter) = &index_setter {
+			if index_setter.params.len() != 2 {
+				self.push_error(format!("Index setter in class {} should have two parameters", name));
+			}
+		}
+
+		if let Some(index_getter) = &index_getter {
+			if index_getter.params.len() != 1 {
+				self.push_error(format!("Index getter in class {} should have one parameter", name));
 			}
 		}
 
 		self.consume_token(TokenType::RightBrace, "Expect '}' after class body.")?;
 
 		Ok(Statement::Class(Box::new(Class {
-			name: name,
+			name,
 			superclass,
 			methods,
 			properties,
@@ -212,6 +275,29 @@ impl Parser {
 			body,
 		})
 	}
+	fn function_literal(&mut self) -> Result<Expression, ParseError> {
+		let mut params = Vec::new();
+		self.consume_token(TokenType::LeftParen, "Expect '(' after function keyword.")?;
+
+		if !self.check(TokenType::RightParen) {
+			loop {
+				params.push(self.consume_identifier("Expect parameter name.")?);
+
+				if self.match_token(TokenType::Comma) {
+					continue;
+				}
+
+				break;
+			}
+		}
+		self.consume_token(TokenType::RightParen, "Expect ')' after parameters.")?;
+		self.consume_token(TokenType::LeftBrace, "Expect '{' before function body.")?;
+		let body = self.block()?;
+		Ok(Expression::Literal(Literal::Function(AnonymousFunction {
+			params,
+			body: Box::new(body),
+		})))
+	}
 
 	fn var_declaration(&mut self, kind: VarKind) -> Result<Statement, ParseError> {
 		let name = self.consume_identifier("Expect variable name.")?;
@@ -221,7 +307,14 @@ impl Parser {
 			initializer = Some(self.expression()?);
 		}
 
-		self.consume_token(TokenType::Semicolon, "Expect ';' after variable declaration.")?;
+		if kind == VarKind::IndexVariable {
+			self.consume_token(TokenType::Semicolon, "Expect ';' after for loop initializer.")?;
+		} else {
+			let res = self.consume_token(TokenType::Semicolon, "Expect ';' after variable declaration.");
+			if res.is_err() {
+				panic!("{:?}", res);
+			}
+		}
 
 		Ok(Statement::Let(Let {
 			name,
@@ -254,6 +347,7 @@ impl Parser {
 	}
 
 	fn loop_statement(&mut self) -> Result<Statement, ParseError> {
+		self.consume_token(TokenType::LeftBrace, "Expect '{' after 'loop'.")?;
 		let body = self.block()?;
 		Ok(Statement::Loop(Box::new(body)))
 	}
@@ -265,6 +359,7 @@ impl Parser {
 		let else_ifs = self.else_ifs()?;
 		let mut else_branch = None;
 		if self.match_token(TokenType::Else) {
+			self.consume_token(TokenType::LeftBrace, "Expect '{' after else.")?;
 			else_branch = Some(self.block()?);
 		}
 
@@ -272,7 +367,7 @@ impl Parser {
 			condition,
 			then: then_branch,
 			else_if: else_ifs,
-			else_: else_branch,
+			r#else: else_branch,
 		})))
 	}
 
@@ -308,10 +403,14 @@ impl Parser {
 		self.consume_token(TokenType::LeftParen, "Expect '(' after 'for'.")?;
 		let mut initializer = None;
 		if !self.check(TokenType::Semicolon) {
-			initializer = Some(self.statement()?);
+			if self.match_token(TokenType::Let) {
+				initializer = Some(self.var_declaration(VarKind::IndexVariable)?);
+			} else {
+				initializer = Some(self.expression_statement()?);
+			}
 		}
 
-		self.consume_token(TokenType::Semicolon, "Expect ';' after for-loop initializer.")?;
+		println!("For {:?}", self.peek());
 
 		let mut condition = None;
 		if !self.check(TokenType::Semicolon) {
@@ -322,7 +421,7 @@ impl Parser {
 
 		let mut update = None;
 		if !self.check(TokenType::RightParen) {
-			update = Some(self.statement()?);
+			update = Some(self.expression()?);
 		}
 
 		self.consume_token(TokenType::RightParen, "Expect ')' after for-loop increment.")?;
@@ -380,12 +479,15 @@ impl Parser {
 	}
 
 	fn block(&mut self) -> Result<Statement, ParseError> {
+		let first_token = self.peek();
 		let mut statements = Vec::new();
 		while !self.check(TokenType::RightBrace) && !self.is_at_end() {
-			statements.push(self.declaration()?);
+			if let Ok(statement) = self.declaration() {
+				statements.push(statement);
+			}
 		}
 
-		self.consume_token(TokenType::RightBrace, "Expect '}' after block.")?;
+		self.consume_token(TokenType::RightBrace, format!("From {:?}", first_token))?;
 
 		Ok(Statement::Block(statements))
 	}
@@ -403,22 +505,41 @@ impl Parser {
 
 	fn assignment(&mut self) -> Result<Expression, ParseError> {
 		let expr = self.or()?;
-		if self.match_token(TokenType::Equal) {
-			let equals = self.previous();
+		if self.match_token(TokenType::Equal)
+			|| self.match_token(TokenType::PlusEqual)
+			|| self.match_token(TokenType::MinusEqual)
+			|| self.match_token(TokenType::StarEqual)
+			|| self.match_token(TokenType::SlashEqual)
+			|| self.match_token(TokenType::PercentEqual)
+			|| self.match_token(TokenType::CaretEqual) {
+			let operator = self.previous();
 			let value = self.assignment()?;
 			return if let Expression::Variable(name) = expr {
 				Ok(Expression::Assign(Assign {
 					name,
 					value: Box::new(value),
+					operator,
 				}))
 			} else if let Expression::Get(get) = expr {
 				Ok(Expression::Set(Set {
 					object: get.object,
 					name: get.name,
 					value: Box::new(value),
+					operator,
+				}))
+			} else if let Expression::IndexGet(get) = expr {
+				Ok(Expression::IndexSet(IndexSet {
+					object: get.object,
+					index: get.index,
+					value: Box::new(value),
+					operator,
 				}))
 			} else {
-				Err(self.error(format!("Invalid assignment target: {}", equals.token_type)))
+				return if let Expression::Super(_) = expr {
+					Err(self.error("Cannot assign to super."))
+				} else {
+					Err(self.error("Invalid assignment target."))
+				}
 			}
 		}
 
@@ -527,13 +648,43 @@ impl Parser {
 				operator: self.previous().token_type,
 				right: Box::new(self.unary()?),
 			}));
+		} else if self.match_token(TokenType::Minus) {
+			return Ok(Expression::Unary(Unary {
+				operator: self.previous().token_type,
+				right: Box::new(self.unary()?),
+			}));
+		} else if self.match_token(TokenType::Plus) {
+			return Ok(Expression::Unary(Unary {
+				operator: self.previous().token_type,
+				right: Box::new(self.unary()?),
+			}));
+		} else if self.match_token(TokenType::Typeof) {
+			return Ok(Expression::Unary(Unary {
+				operator: self.previous().token_type,
+				right: Box::new(self.unary()?),
+			}));
 		}
 
-		self.call()
+		self.exponent()
 	}
 
-	fn call(&mut self) -> Result<Expression, ParseError> {
-		let mut expr = self.primary()?;
+	fn exponent(&mut self) -> Result<Expression, ParseError> {
+		let mut expr = self.maybe_call()?;
+		while self.match_token(TokenType::Caret) {
+			let operator = self.previous();
+			let right = self.maybe_call()?;
+			expr = Expression::Binary(Binary {
+				left: Box::new(expr),
+				operator: operator.token_type,
+				right: Box::new(right),
+			});
+		}
+
+		Ok(expr)
+	}
+
+	fn maybe_call(&mut self) -> Result<Expression, ParseError> {
+		let mut expr = self.cast()?;
 		loop {
 			if self.match_token(TokenType::LeftParen) {
 				expr = self.finish_call(expr)?;
@@ -574,10 +725,22 @@ impl Parser {
 	fn finish_index(&mut self, left: Expression) -> Result<Expression, ParseError> {
 		let index = self.expression()?;
 		self.consume_token(TokenType::RightBracket, "Expect ']' after index.")?;
-		Ok(Expression::Index(IndexCall {
+		Ok(Expression::IndexGet(IndexGet {
 			object: Box::new(left),
 			index: Box::new(index),
 		}))
+	}
+
+	fn cast(&mut self) -> Result<Expression, ParseError> {
+		let expr = self.primary()?;
+		if self.match_token(TokenType::As) {
+			let r#type = self.expression()?;
+			return Ok(Expression::Cast(Cast {
+				value: Box::new(expr),
+				r#type: Box::new(r#type),
+			}));
+		}
+		Ok(expr)
 	}
 
 	fn primary(&mut self) -> Result<Expression, ParseError> {
@@ -606,12 +769,54 @@ impl Parser {
 		}
 
 		if self.match_token(TokenType::Super) {
-			return Ok(Expression::Super);
+			return Ok(self.super_expression()?);
 		}
 
 		if self.match_token(TokenType::This) {
 			return Ok(Expression::This);
 		}
+
+		if self.match_token(TokenType::StringType) {
+			return Ok(Expression::Literal(Literal::Type(Type::String)));
+		}
+
+		if self.match_token(TokenType::NumberType) {
+			return Ok(Expression::Literal(Literal::Type(Type::Number)));
+		}
+
+		if self.match_token(TokenType::BooleanType) {
+			return Ok(Expression::Literal(Literal::Type(Type::Boolean)));
+		}
+
+		if self.match_token(TokenType::Nil) {
+			return Ok(Expression::Literal(Literal::Type(Type::Nil)));
+		}
+
+		if self.match_token(TokenType::Fn) {
+			return if self.check(TokenType::LeftParen) {
+				let res = self.function_literal()?;
+				Ok(res)
+			} else {
+				Ok(Expression::Literal(Literal::Type(Type::Fn)))
+			}
+		}
+
+		if self.match_token(TokenType::Class) {
+			return Ok(Expression::Literal(Literal::Type(Type::Class)));
+		}
+
+		if self.match_token(TokenType::ArrayType) {
+			return Ok(Expression::Literal(Literal::Type(Type::Array)));
+		}
+
+		if self.match_token(TokenType::ObjectType) {
+			return Ok(Expression::Literal(Literal::Type(Type::Object)));
+		}
+
+		if self.match_token(TokenType::TypeType) {
+			return Ok(Expression::Literal(Literal::Type(Type::Type)));
+		}
+
 
 		if self.match_token(TokenType::LeftParen) {
 			let expr = self.expression()?;
@@ -624,6 +829,22 @@ impl Parser {
 		}
 
 		Err(self.error("Expect expression."))
+	}
+
+
+	fn super_expression(&mut self) -> Result<Expression, ParseError> {
+		let keyword = self.previous();
+		if self.match_token(TokenType::Dot) {
+			let name = self.consume_identifier("Expect property name after '.'")?;
+			return Ok(Expression::Super(Super {
+				keyword,
+				method: Some(name),
+			}));
+		}
+		Ok(Expression::Super(Super {
+			keyword,
+			method: None,
+		}))
 	}
 
 	fn array(&mut self) -> Result<Expression, ParseError> {
@@ -672,12 +893,32 @@ impl Parser {
 		self.tokens[self.current - 1].clone()
 	}
 
-	fn error<S: ToString>(&self, message: S) -> ParseError {
-		ParseError {
+	fn error<S: ToString>(&mut self, message: S) -> ParseError {
+		let error = ParseError {
 			message: message.to_string(),
 			token: self.peek().clone(),
 			context: self.context,
-		}
+		};
+		self.errors.push(error.clone());
+		self.synchronize();
+		error
+	}
+
+	fn push_error<S: ToString>(&mut self, message: S) {
+		let error = ParseError {
+			message: message.to_string(),
+			token: self.peek().clone(),
+			context: self.context,
+		};
+		self.errors.push(error);
+	}
+
+	fn warn<S: ToString>(&mut self, message: S) {
+		self.warnings.push(ParseWarning {
+			message: message.to_string(),
+			token: self.peek().clone(),
+			context: self.context,
+		});
 	}
 
 	fn peek(&self) -> Token {
@@ -693,39 +934,60 @@ impl Parser {
 	}
 
 	fn synchronize(&mut self) {
-		self.advance();
-
 		while !self.is_at_end() {
-			if self.previous().token_type == TokenType::Class {
+
+			if self.previous().token_type == TokenType::Semicolon {
 				return;
 			}
 
-			if self.previous().token_type == TokenType::Fn {
+			if self.match_token(TokenType::Semicolon) {
 				return;
 			}
 
-			if self.previous().token_type == TokenType::Let {
+			if self.check(TokenType::LeftBrace) {
 				return;
 			}
 
-			if self.previous().token_type == TokenType::For {
+			if self.check(TokenType::Class) {
 				return;
 			}
 
-			if self.previous().token_type == TokenType::If {
+			if self.check(TokenType::Fn) {
 				return;
 			}
 
-			if self.previous().token_type == TokenType::While {
+			if self.check(TokenType::Let) {
 				return;
 			}
 
-			if self.previous().token_type == TokenType::Print {
+			if self.check(TokenType::If) {
 				return;
 			}
 
-			if self.previous().token_type == TokenType::Return {
+			if self.check(TokenType::Else) {
 				return;
+			}
+
+			if self.check(TokenType::Return) {
+				return;
+			}
+
+			if self.check(TokenType::While) {
+				return;
+			}
+
+			if self.check(TokenType::For) {
+				return;
+			}
+
+			if self.context == Context::Class {
+				if self.check(TokenType::Get) {
+					return;
+				}
+
+				if self.check(TokenType::Set) {
+					return;
+				}
 			}
 
 			self.advance();
@@ -738,18 +1000,18 @@ impl Parser {
 
 
 	fn check_identifier(&mut self) -> bool {
-		match self.peek().token_type {
-			TokenType::Identifier(_) => {
-				true
-			},
-			TokenType::Get => {
-				true
-			},
-			TokenType::Set => {
-				true
-			},
-			_ => false,
+		if let TokenType::Identifier(_) = self.peek().token_type {
+			return true;
 		}
+		if self.context != Context::Class {
+			if let TokenType::Get = self.peek().token_type {
+				return true;
+			}
+			if let TokenType::Set = self.peek().token_type {
+				return true;
+			}
+		}
+		false
 	}
 
 	fn check_number(&mut self) -> bool {
@@ -786,21 +1048,21 @@ impl Parser {
 	}
 
 	fn consume_identifier<S: ToString>(&mut self, error_message: S) -> Result<String, ParseError> {
-		match self.peek().token_type {
-			TokenType::Identifier(identifier) => {
-				self.advance();
-				Ok(identifier.clone())
-			},
-			TokenType::Get => {
-				self.advance();
-				Ok("get".to_string())
-			},
-			TokenType::Set => {
-				self.advance();
-				Ok("set".to_string())
-			},
-			_ => Err(self.error(error_message)),
+		if let TokenType::Identifier(s) = self.peek().token_type {
+			self.advance();
+			return Ok(s)
 		}
+		if self.context != Context::Class {
+			if self.check(TokenType::Get) {
+				self.advance();
+				return Ok("get".to_string())
+			}
+			if self.check(TokenType::Set) {
+				self.advance();
+				return Ok("set".to_string())
+			}
+		}
+		Err(self.error(error_message))
 	}
 
 	fn consume_number(&mut self) -> Result<f64, ParseError> {

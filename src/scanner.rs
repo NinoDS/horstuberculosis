@@ -1,18 +1,18 @@
 use std::fmt::Display;
 use std::ops::Range;
-use crate::tokens::Token;
+use crate::tokens::{Position, Token};
 use crate::TokenType;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ScanError {
 	message: String,
-	line: usize,
-	column: usize,
+	start: Position,
+	end: Position,
 }
 
 impl Display for ScanError {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		write!(f, "Error on line {} column {}: {}", self.line, self.column, self.message)
+		write!(f, "{}", self.message)
 	}
 }
 
@@ -34,7 +34,7 @@ impl Scanner {
 			start: 0,
 			current: 0,
 			line: 1,
-			column: 0,
+			column: 1,
 			error: None,
 		}
 	}
@@ -50,6 +50,9 @@ impl Scanner {
 
 		self.push_token(TokenType::Eof);
 
+		if self.has_error() {
+			return Err(self.error.clone().unwrap());
+		}
 		Ok(())
 	}
 
@@ -296,27 +299,71 @@ impl Scanner {
 		let c = self.source_at(self.current - 1);
 		if c == '\n' {
 			self.line += 1;
-			self.column = 0;
+			self.column = 1;
 		}
 		c
 	}
 
 	fn push_token(&mut self, token_type: TokenType) {
+		let mut start_line = 1;
+		let mut start_column = 1;
+		for (i, c) in self.source.chars().enumerate() {
+			if i >= self.start {
+				break;
+			}
+			if c == '\n' {
+				start_line += 1;
+				start_column = 1;
+			} else {
+				start_column += 1;
+			}
+		}
+
+		let start = Position {
+			line: start_line,
+			column: start_column,
+		};
+
 		self.tokens.push(Token {
 			token_type,
-			line: self.line,
-			column: self.column,
+			start,
+			end: Position {
+				line: self.line,
+				column: self.column,
+			},
 		});
 	}
 
 	fn error<S: ToString>(&mut self, message: S) {
-		let error = ScanError {
-			message: message.to_string(),
+		let end = Position {
 			line: self.line,
 			column: self.column,
 		};
 
-		self.error = Some(error);
+		let mut start_line = 1;
+		let mut start_column = 1;
+		for (i, c) in self.source.chars().enumerate() {
+			if i >= self.start {
+				break;
+			}
+			if c == '\n' {
+				start_line += 1;
+				start_column = 1;
+			} else {
+				start_column += 1;
+			}
+		}
+
+		let start = Position {
+			line: start_line,
+			column: start_column,
+		};
+
+		self.error = Some(ScanError {
+			start,
+			end,
+			message: message.to_string(),
+		});
 	}
 
 	fn has_error(&self) -> bool {
@@ -324,7 +371,11 @@ impl Scanner {
 	}
 
 	fn source_at(&self, index: usize) -> char {
-		self.source.chars().nth(index).unwrap()
+		if let Some(c) = self.source.chars().nth(index) {
+			c
+		} else {
+			'\0'
+		}
 	}
 
 }

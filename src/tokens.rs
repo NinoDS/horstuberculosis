@@ -75,6 +75,8 @@ pub enum TokenType {
 	TypeType,           // "type"
 	// "fn" is a keyword, but it's also a type
 	// "nil" is a keyword, but it's also its own type
+	// "class" is a keyword, but it's also a type
+	// string number boolean object array type fn nil
 
 	Eof,
 }
@@ -155,9 +157,15 @@ impl Display for TokenType {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Position {
+	pub(crate) line: usize,
+	pub(crate) column: usize,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Token {
 	pub token_type: TokenType,
-	pub line: usize,
-	pub column: usize,
+	pub end: Position,
+	pub start: Position,
 }
